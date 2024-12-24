@@ -1,222 +1,162 @@
 import sqlite3
+import json
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional, Any
 import logging
+from pathlib import Path
 import re
-from collections import Counter
 
 class DialogManager:
     def __init__(self):
-        self.db_path = "dialogs.db"
+        self.db_path = Path('mika_data.db')
         self._init_db()
-        
-    def _init_db(self):
-        """Инициализация базы данных для хранения диалогов."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS dialogs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    human_message TEXT NOT NULL,
-                    ai_message TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_info (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT,
-                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.commit()
-            
-            # Создаем запись для пользователя, если её нет
-            cursor.execute("INSERT OR IGNORE INTO user_info (id) VALUES (1)")
-            conn.commit()
-    
-    def _extract_name(self, text: str) -> Optional[str]:
-        """Извлекает имя из текста."""
-        # Паттерны для поиска имени
-        patterns = [
-            r"меня зовут (\w+)",
-            r"моё имя (\w+)",
-            r"мое имя (\w+)",
-            r"я (\w+)",
+        self.name_patterns = [
+            r'меня зовут (\w+)',
+            r'я (\w+)',
+            r'моё имя (\w+)',
+            r'мое имя (\w+)',
+            r'можешь называть меня (\w+)',
+            r'можешь звать меня (\w+)'
         ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text.lower())
-            if match:
-                name = match.group(1)
-                # Приводим имя к формату с заглавной буквы
-                return name.capitalize()
-        return None
     
-    def update_user_name(self, name: str):
-        """Обновляет имя пользователя."""
+    def _init_db(self):
+        """Инициализация базы данных."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE user_info SET name = ?, last_updated = CURRENT_TIMESTAMP WHERE id = 1",
-                    (name,)
-                )
+                
+                # Таблица для сообщений
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        human_message TEXT,
+                        ai_message TEXT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Таблица для пользовательских данных
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS user_preferences (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
                 conn.commit()
         except Exception as e:
-            logging.error(f"Ошибка при обновлении имени пользователя: {str(e)}")
-    
-    def get_user_name(self) -> Optional[str]:
-        """Возвращает имя пользователя."""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT name FROM user_info WHERE id = 1")
-                result = cursor.fetchone()
-                return result[0] if result and result[0] else None
-        except Exception as e:
-            logging.error(f"Ошибка при получении имени пользователя: {str(e)}")
-            return None
-    
-    def process_message(self, message: str) -> Dict[str, any]:
-        """Обрабатывает сообщение и возвращает информацию о нём."""
-        result = {
-            "is_name_question": False,
-            "contains_name": False,
-            "name": None
-        }
-        
-        # Проверяем, спрашивает ли пользователь своё имя
-        name_questions = [
-            "как меня зовут",
-            "помнишь как меня зовут",
-            "знаешь моё имя",
-            "знаешь мое имя",
-            "помнишь моё имя",
-            "помнишь мое имя"
-        ]
-        
-        if any(q in message.lower() for q in name_questions):
-            result["is_name_question"] = True
-            return result
-        
-        # Проверяем, представляется ли пользователь
-        name = self._extract_name(message)
-        if name:
-            result["contains_name"] = True
-            result["name"] = name
-            self.update_user_name(name)
-        
-        return result
-    
-    def _tokenize(self, text: str) -> List[str]:
-        """Простая токенизация текста."""
-        # Приводим к нижнему регистру и удаляем пунктуацию
-        text = re.sub(r'[^\w\s]', '', text.lower())
-        # Разбиваем на слова
-        return text.split()
-    
-    def _calculate_similarity(self, text1: str, text2: str) -> float:
-        """Вычисляет простое сходство между текстами на основе общих слов."""
-        tokens1 = self._tokenize(text1)
-        tokens2 = self._tokenize(text2)
-        
-        # Создаем множества слов
-        set1 = set(tokens1)
-        set2 = set(tokens2)
-        
-        # Вычисляем коэффициент Жаккара
-        intersection = len(set1.intersection(set2))
-        union = len(set1.union(set2))
-        
-        return intersection / union if union > 0 else 0.0
+            logging.error(f"Ошибка при инициализации БД: {str(e)}")
     
     def add_interaction(self, human_message: str, ai_message: str):
-        """Добавляет новое взаимодействие в базу данных."""
+        """Добавляет взаимодействие в базу данных."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "INSERT INTO dialogs (human_message, ai_message) VALUES (?, ?)",
+                    'INSERT INTO messages (human_message, ai_message) VALUES (?, ?)',
                     (human_message, ai_message)
                 )
                 conn.commit()
         except Exception as e:
-            logging.error(f"Ошибка при добавлении диалога: {str(e)}")
+            logging.error(f"Ошибка при сохранении взаимодействия: {str(e)}")
     
-    def get_context(self, current_message: str, max_results: int = 3) -> List[str]:
-        """Получает релевантный контекст на основе текущего сообщения."""
+    def get_recent_messages(self, limit: int = 5) -> List[Dict[str, str]]:
+        """Получает последние сообщения из базы данных."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                # Получаем все диалоги за последние 7 дней
                 cursor.execute(
-                    "SELECT human_message, ai_message FROM dialogs WHERE timestamp > ?",
-                    (datetime.now() - timedelta(days=7),)
+                    'SELECT human_message, ai_message FROM messages ORDER BY timestamp DESC LIMIT ?',
+                    (limit,)
                 )
-                dialogs = cursor.fetchall()
-                
-                if not dialogs:
-                    return []
-                
-                # Вычисляем сходство с каждым диалогом
-                similarities = []
-                for human_msg, ai_msg in dialogs:
-                    similarity = self._calculate_similarity(current_message, human_msg)
-                    similarities.append((similarity, human_msg, ai_msg))
-                
-                # Сортируем по сходству и берем top-k
-                similarities.sort(reverse=True)
-                context = []
-                for _, human_msg, ai_msg in similarities[:max_results]:
-                    context.extend([
-                        f"Пользователь: {human_msg}",
-                        f"Мика: {ai_msg}"
+                messages = []
+                for human_msg, ai_msg in cursor.fetchall():
+                    messages.extend([
+                        {'role': 'user', 'content': human_msg},
+                        {'role': 'assistant', 'content': ai_msg}
                     ])
-                
-                return context
+                return messages[::-1]  # Возвращаем в хронологическом порядке
         except Exception as e:
-            logging.error(f"Ошибка при получении контекста: {str(e)}")
+            logging.error(f"Ошибка при получении сообщений: {str(e)}")
             return []
     
-    def analyze_sentiment(self, text: str) -> str:
-        """Простой анализ тональности на основе ключевых слов."""
-        # Списки позитивных и негативных слов
-        positive_words = {
-            'хорошо', 'отлично', 'замечательно', 'прекрасно', 'великолепно',
-            'радость', 'счастье', 'любовь', 'нравится', 'круто', 'супер',
-            'класс', 'здорово', 'приятно', 'весело', 'спасибо', 'благодарю'
-        }
-        
-        negative_words = {
-            'пл��хо', 'ужасно', 'отвратительно', 'грустно', 'печально',
-            'жаль', 'жалко', 'неприятно', 'раздражает', 'бесит', 'ненавижу',
-            'злит', 'огорчает', 'разочарован', 'устал', 'надоело'
-        }
-        
-        # Токенизируем текст
-        tokens = self._tokenize(text)
-        
-        # Подсчитываем количество позитивных и негативных слов
-        positive_count = sum(1 for word in tokens if word in positive_words)
-        negative_count = sum(1 for word in tokens if word in negative_words)
-        
-        # Определяем тональность
-        if positive_count > negative_count:
-            return "positive"
-        elif negative_count > positive_count:
-            return "negative"
-        return "neutral"
-    
-    def clear_old_messages(self, days: int = 30):
+    def clear_old_messages(self, days: int = 7):
         """Удаляет старые сообщения из базы данных."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "DELETE FROM dialogs WHERE timestamp < ?",
-                    (datetime.now() - timedelta(days=days),)
+                    'DELETE FROM messages WHERE timestamp < datetime("now", ?)',
+                    (f'-{days} days',)
                 )
                 conn.commit()
         except Exception as e:
-            logging.error(f"Ошибка при очистке старых сообщений: {str(e)}") 
+            logging.error(f"Ошибка при очистке старых сообщений: {str(e)}")
+    
+    def update_user_preferences(self, preferences: Dict[str, Any]):
+        """Обновляет пользовательские настройки."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                for key, value in preferences.items():
+                    cursor.execute(
+                        '''INSERT OR REPLACE INTO user_preferences (key, value, timestamp)
+                           VALUES (?, ?, CURRENT_TIMESTAMP)''',
+                        (key, json.dumps(value))
+                    )
+                conn.commit()
+        except Exception as e:
+            logging.error(f"Ошибка при обновлении настроек: {str(e)}")
+    
+    def get_user_preferences(self) -> Dict[str, Any]:
+        """Получает пользовательские настройки."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT key, value FROM user_preferences')
+                return {key: json.loads(value) for key, value in cursor.fetchall()}
+        except Exception as e:
+            logging.error(f"Ошибка при получении настроек: {str(e)}")
+            return {}
+    
+    def process_message(self, message: str) -> Dict[str, Any]:
+        """Обрабатывает сообщение и возвращает информацию о нём."""
+        result = {
+            'requires_name_confirmation': False,
+            'name': None,
+            'requires_wiki': False,
+            'wiki_info': None,
+            'sentiment': {'polarity': 0, 'subjectivity': 0},
+            'keywords': []
+        }
+        
+        # Проверяем, спрашивает ли пользователь имя Мики
+        if re.search(r'как\s+тебя\s+зовут', message.lower()):
+            result['is_mika_name_question'] = True
+            return result
+        
+        # Проверяем, представляется ли пользователь
+        for pattern in self.name_patterns:
+            match = re.search(pattern, message.lower())
+            if match:
+                name = match.group(1)
+                # Проверяем длину имени и наличие недопустимых символов
+                if 2 <= len(name) <= 20 and re.match(r'^[а-яА-ЯёЁa-zA-Z]+$', name):
+                    result['requires_name_confirmation'] = True
+                    result['name'] = name.capitalize()
+                break
+        
+        # Проверяем, нужна ли информация из Wikipedia
+        wiki_triggers = {'что такое', 'кто такой', 'расскажи о', 'расскажи про'}
+        message_lower = message.lower()
+        for trigger in wiki_triggers:
+            if trigger in message_lower:
+                # Извлекаем тему после триггера
+                topic = message_lower.split(trigger)[-1].strip()
+                if topic:
+                    result['requires_wiki'] = True
+                    # Здесь можно добавить получение информации из Wikipedia
+                break
+        
+        return result 

@@ -3,7 +3,7 @@ Mika AI Assistant Package
 """
 
 from .mika import Mika
-from .database import MikaDB
-from .text_analyzer import TextAnalyzer
+from .dialog_manager import DialogManager
+from .text_processor import TextProcessor
 
-__all__ = ['Mika', 'MikaDB', 'TextAnalyzer'] 
+__all__ = ['Mika', 'DialogManager', 'TextProcessor'] 
