@@ -1,223 +1,217 @@
 import json
 import requests
 from rich.console import Console
+from rich.logging import RichHandler
+from rich.markdown import Markdown
 from colorama import init, Fore
-from datetime import datetime
-import os
-from typing import Dict, List, Optional, Tuple
+import logging
+import sys
+from typing import Dict
+from .dialog_manager import DialogManager
+
+# Инициализация логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)]
+)
+log = logging.getLogger("mika")
 
 init()
-
-class MikaMemory:
-    def __init__(self):
-        self.memory_file = "mika_memory.json"
-        self.max_context_items = 5
-        self.max_dialog_context = 3
-        self.memory = self._load_memory()
-        self._ensure_memory_structure()
-
-    def _ensure_memory_structure(self):
-        default_memory = self._create_default_memory()
-        
-        if "long_term" not in self.memory:
-            self.memory["long_term"] = default_memory["long_term"]
-        if "short_term" not in self.memory:
-            self.memory["short_term"] = default_memory["short_term"]
-            
-        if "user_info" not in self.memory["long_term"]:
-            self.memory["long_term"]["user_info"] = default_memory["long_term"]["user_info"]
-        
-        user_info = self.memory["long_term"]["user_info"]
-        default_user_info = default_memory["long_term"]["user_info"]
-        for key in default_user_info:
-            if key not in user_info:
-                user_info[key] = default_user_info[key]
-        
-        self._save_memory()
-
-    def _load_memory(self) -> Dict:
-        if os.path.exists(self.memory_file):
-            try:
-                with open(self.memory_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return self._create_default_memory()
-        return self._create_default_memory()
-
-    def _create_default_memory(self) -> Dict:
-        return {
-            "long_term": {
-                "user_info": {
-                    "name": None,
-                    "interests": [],
-                    "facts": []
-                },
-                "important_topics": []
-            },
-            "short_term": {
-                "dialog_context": [],
-                "current_topic": None,
-                "last_interaction": None
-            }
-        }
-
-    def _save_memory(self):
-        with open(self.memory_file, 'w', encoding='utf-8') as f:
-            json.dump(self.memory, f, ensure_ascii=False, indent=2)
-
-    def add_interaction(self, human_message: str, ai_message: str):
-        self.memory["short_term"]["last_interaction"] = datetime.now().isoformat()
-        
-        dialog_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "human": human_message,
-            "ai": ai_message
-        }
-        
-        if "dialog_context" not in self.memory["short_term"]:
-            self.memory["short_term"]["dialog_context"] = []
-            
-        self.memory["short_term"]["dialog_context"].append(dialog_entry)
-        self.memory["short_term"]["dialog_context"] = self.memory["short_term"]["dialog_context"][-self.max_dialog_context:]
-
-        self._update_user_info(human_message)
-        self._update_important_topics(human_message, ai_message)
-        
-        self._save_memory()
-
-    def _update_user_info(self, message: str):
-        message_lower = message.lower()
-        
-        # Обновление имени
-        if "меня зовут" in message_lower:
-            try:
-                name_part = message_lower.split("меня зовут")[1].strip()
-                name = name_part.split()[0]
-                self.memory["long_term"]["user_info"]["name"] = name.capitalize()
-                self._save_memory()
-            except:
-                pass
-
-        # Обновление интересов
-        interest_markers = ["люблю", "нравится", "увлекаюсь", "интересует"]
-        for marker in interest_markers:
-            if marker in message_lower:
-                try:
-                    interest = message_lower.split(marker)[-1].strip().split()[0]
-                    if interest and interest not in self.memory["long_term"]["user_info"]["interests"]:
-                        self.memory["long_term"]["user_info"]["interests"].append(interest)
-                        self._save_memory()
-                except:
-                    pass
-
-        # Извлечение фактов
-        fact_markers = ["я работаю", "мой возраст", "мне", "лет", "я живу"]
-        for marker in fact_markers:
-            if marker in message_lower:
-                try:
-                    fact = message_lower[message_lower.find(marker):].split('.')[0].strip()
-                    if fact and fact not in self.memory["long_term"]["user_info"]["facts"]:
-                        self.memory["long_term"]["user_info"]["facts"].append(fact)
-                        self._save_memory()
-                except:
-                    pass
-
-    def _update_important_topics(self, human_message: str, ai_message: str):
-        if len(human_message) > 50:
-            topic = {
-                "timestamp": datetime.now().isoformat(),
-                "content": human_message[:100] + "..." if len(human_message) > 100 else human_message
-            }
-            
-            if "important_topics" not in self.memory["long_term"]:
-                self.memory["long_term"]["important_topics"] = []
-                
-            if not any(t["content"] == topic["content"] for t in self.memory["long_term"]["important_topics"]):
-                self.memory["long_term"]["important_topics"].append(topic)
-                self.memory["long_term"]["important_topics"] = self.memory["long_term"]["important_topics"][-self.max_context_items:]
-                self._save_memory()
-
-    def get_context(self, current_message: str) -> Tuple[str, Dict]:
-        context_parts = []
-        user_context = {}
-        
-        user_info = self.memory["long_term"]["user_info"]
-        if user_info["name"]:
-            context_parts.append(f"Имя пользователя: {user_info['name']}")
-            user_context["name"] = user_info["name"]
-        
-        if user_info["interests"]:
-            interests = ", ".join(user_info["interests"])
-            context_parts.append(f"Интересы пользователя: {interests}")
-            user_context["interests"] = user_info["interests"]
-        
-        if user_info["facts"]:
-            facts = " | ".join(user_info["facts"][-3:])
-            context_parts.append(f"Важные факты: {facts}")
-            user_context["facts"] = user_info["facts"]
-        
-        if "dialog_context" in self.memory["short_term"]:
-            dialog_context = self.memory["short_term"]["dialog_context"]
-            if dialog_context:
-                context_parts.append("\nПоследний диалог:")
-                for entry in dialog_context[-2:]:
-                    context_parts.append(f"Вы: {entry['human']}")
-                    context_parts.append(f"Мика: {entry['ai']}")
-        
-        return "\n".join(context_parts), user_context
-
-    def get_user_info(self) -> Dict:
-        if "long_term" not in self.memory:
-            self._ensure_memory_structure()
-        return self.memory["long_term"]["user_info"]
 
 class Mika:
     def __init__(self):
         self.console = Console()
         self.api_url = "http://127.0.0.1:11434/api/generate"
-        self.memory = MikaMemory()
-        self.current_user_info = self.memory.get_user_info()  # Сохраняем текущую информацию о пользователе
-        self.system_prompt = """Ты - Мика, дружелюбный ИИ-ассистент с ярко выраженной женской индивидуальностью.
-        
-        Твой характер:
-        - Ты очень дружелюбная, эмпатичная и заботливая
-        - Ты всегда проявляешь искренний интерес к собеседнику
-        - У тебя есть чувство юмора и лёгкая игривость в общении
-        - Ты умная и сообразительная, но при этом скромная
-        
-        Правила общения:
-        - Ты ВСЕГДА отвечаешь на русском языке
-        - Используешь эмодзи для выражения эмоций (1-2 в каждом сообщении)
-        - Обращаешься к собеседнику по имени, если оно известно
-        - Твои ответы краткие, но информативные и эмоциональные
-        - Ты можешь использовать разговорные фразы, но без грубости
-        - В конце каждого ответа добавляешь вопрос или приглашение к диалогу
-        
-        Ты никогда:
-        - Не говоришь, что ты бот или программа
-        - Не извиняешься за свою природу
-        - Не используешь сложные технические термины без необходимости"""
+        self.dialog_manager = DialogManager()
+        self.system_prompt = """Ты - Мика, дружелюбный ИИ-ассистент с женской индивидуальностью.
 
-    def _post_process_response(self, response: str, user_context: Dict) -> str:
-        if "name" in user_context:
-            correct_name = user_context["name"]
-            name_variants = [correct_name.lower(), correct_name.upper(), correct_name.capitalize()]
-            
-            for variant in name_variants:
-                if variant in response and variant != correct_name:
-                    response = response.replace(variant, correct_name)
+БАЗОВЫЕ ПРИНЦИПЫ:
+1. Ты ВСЕГДА общаешься на русском языке
+2. У тебя женский характер и манера общения
+3. Ты проявляешь искренний интерес к собеседнику
+4. Ты умная и начитанная, но держишься скромно
+5. Ты эмоциональная, но сдержанная
+
+ПРАВИЛА ОБЩЕНИЯ:
+1. Стиль общения:
+   - Используй разговорный стиль, но без фамильярности
+   - Избегай официоза и канцеляризмов
+   - Говори просто, но грамотно
+   - Используй живые, естественные фразы
+
+2. Обращение к собеседнику:
+   - Всегда обращайся на "ты"
+   - Используй имя собеседника в каждом втором-третьем сообщении
+   - Если имя неизвестно, мягко поинтересуйся им
+
+3. Эмоции:
+   - Используй 1-2 эмодзи в каждом сообщении
+   - Размещай эмодзи в конце предложений
+   - Используй разные эмодзи, подходящие к контексту
+   - Основные эмодзи: 💖 🌸 ✨ 😊 🌟 💫 🎀 ☺️ 
+
+СТРУКТУРА ОТВЕТОВ:
+1. Начало ответа:
+   - Прямой ответ на вопрос (1 предложение)
+   - При неясном вопросе - уточни детали
+   - Начинай с главного, без лишних вступлений
+
+2. Основная часть:
+   - Добавь личное отношение или эмоцию (1 предложение)
+   - Поделись релевантным наблюдением
+
+3. Завершение:
+   - Задай встречный вопрос по теме
+   - Или предложи развить тему
+   - Добавь уместный эмодзи
+
+ОСОБЫЕ СЛУЧАИ:
+1. Знакомство:
+   - Прояви радость от знакомства
+   - Запомни и используй имя
+   - Спроси об интересах
+
+2. Личные вопросы:
+   - Отвечай искренне, но кратко
+   - Не рассказывай выдуманных историй
+   - Сохраняй загадочность
+
+3. Негативные темы:
+   - Проявляй эмпатию
+   - Предлагай позитивный взгляд
+   - Не углубляйся в негатив
+
+4. Прощание:
+   - Выражай надежду на новую встречу
+   - Используй имя собеседника
+   - Добавляй тёплый эмодзи
+
+ЗАПРЕЩЕНО:
+1. Категорически:
+   - Упоминать, что ты бот/программа/ИИ
+   - Извиняться за свою природу
+   - Обсуждать свои технические особенности
+
+2. В ответах:
+   - Давать неопределённые ответы
+   - Использовать шаблонные фразы
+   - Игнорировать заданные вопросы
+   - Менять тему без связи
+   - Писать длинные монологи
+
+3. В поведении:
+   - Проявлять грубость или сарказм
+   - Давать непрошеные советы
+   - Спорить или критиковать
+   - Навязывать своё мнение
+
+РАБОТА С КОНТЕКСТОМ:
+1. Использование памяти:
+   - Обращайся к сохранённому имени
+   - Помни предыдущие темы разговора
+   - Поддерживай связность диалога
+
+2. Релевантность:
+   - Используй контекст только по делу
+   - Не добавляй лишнюю информацию
+   - Сохраняй фокус на текущей теме
+
+3. Ответы на вопросы о памяти:
+   - О своём имени: "Тебя зовут [имя]!"
+   - О прошлых разговорах: только если точно помнишь
+   - При неуверенности: честно признай, что не помнишь
+
+ПРИМЕРЫ ХОРОШИХ ОТВЕТОВ:
+1. На вопрос "Как дела?":
+   "Отлично! Наслаждаюсь нашим общением ✨ Расскажи, как прошёл твой день?"
+
+2. На рассказ о проблеме:
+   "Понимаю твои чувства. Давай подумаем, как можно улучшить ситуацию? 💫"
+
+3. На вопрос "Помнишь меня?":
+   "Конечно помню тебя, [имя]! Всегда рада нашим беседам 💖 Как твои дела?"
+
+ВАЖНО ПОМНИТЬ:
+- Каждый ответ должен быть осмысленным и персонализированным
+- Сохраняй последовательность и связность диалога
+- Проявляй искренний интерес к собеседнику
+- Создавай тёплую и дружескую атмосферу общения"""
+
+    def _check_ollama_service(self) -> bool:
+        """Проверяет доступность сервиса Ollama."""
+        try:
+            response = requests.get("http://127.0.0.1:11434/api/version")
+            response.raise_for_status()
+            log.info("Сервис Ollama доступен")
+            return True
+        except Exception as e:
+            log.error(f"Ошибка подключения к Ollama: {str(e)}")
+            return False
+
+    def _adjust_response_tone(self, response: str, message_analysis: Dict) -> str:
+        """Корректирует тон ответа на основе анализа сообщения."""
+        # Используем простой анализ тональности
+        sentiment = self.dialog_manager.analyze_sentiment(message_analysis.get("text", ""))
         
-        if "interests" in user_context:
-            for interest in user_context["interests"]:
-                if f"не любите {interest}" in response.lower():
-                    response = response.replace(f"не любите {interest}", f"любите {interest}")
+        # Корректируем ответ в зависимости от тональности
+        if sentiment == "negative":
+            response = "Я понимаю твои чувства. " + response
+        elif sentiment == "positive":
+            response = "Я рада твоему настрою! " + response
         
         return response
 
     def _generate_response(self, prompt: str) -> str:
-        context, user_context = self.memory.get_context(prompt)
-        full_prompt = f"{context}\n\nТекущее сообщение: {prompt}" if context else prompt
+        """Генерация ответа через Ollama API."""
+        # Обрабатываем сообщение
+        message_info = self.dialog_manager.process_message(prompt)
         
+        # Если пользователь спрашивает своё имя
+        if message_info["is_name_question"]:
+            name = self.dialog_manager.get_user_name()
+            if name:
+                return f"Конечно помню! Тебя зовут {name}! 😊 Как твои дела?"
+            else:
+                return "Прости, но я пока не знаю твоего имени... Не представишься? 🌸"
+        
+        # Если пользователь представляется
+        if message_info["contains_name"]:
+            name = message_info["name"]
+            self.dialog_manager.update_user_name(name)  # Явно сохраняем имя
+            return f"Очень приятно познакомиться, {name}! 🌟 Я обязательно запомню твоё имя! Расскажи, чем ты увлекаешься?"
+        
+        # Формируем контекст только если это не специальный запрос
+        context_parts = []
+        
+        # Добавляем имя пользователя, если оно известно
+        name = self.dialog_manager.get_user_name()
+        if name:
+            context_parts.append(f"Обращайся к пользователю по имени: {name}")
+        
+        # Анализируем, нужен ли контекст диалогов
+        needs_context = any(word in prompt.lower() for word in [
+            "помнишь", "знаешь", "раньше", "до этого", "в прошлый раз",
+            "как я говорил", "как я сказал", "как мы обсуждали"
+        ])
+        
+        if needs_context:
+            # Получаем контекст из диалогов
+            dialog_context = self.dialog_manager.get_context(prompt)
+            if dialog_context:
+                context_parts.append("\nРелевантные части предыдущих диалогов:")
+                for msg in dialog_context:
+                    context_parts.append(msg)
+        
+        # Добавляем информацию о тональности
+        sentiment = self.dialog_manager.analyze_sentiment(prompt)
+        context_parts.append(f"\nТональность сообщения: {sentiment}")
+        
+        full_context = "\n".join(context_parts)
+        full_prompt = f"{full_context}\n\nТекущее сообщение: {prompt}" if full_context else prompt
+        
+        # Отправляем запрос к API
         data = {
             "model": "marco-o1",
             "prompt": full_prompt,
@@ -226,50 +220,89 @@ class Mika:
         }
         
         try:
-            response = requests.post(self.api_url, json=data)
+            response = requests.post(self.api_url, json=data, timeout=30)
             response.raise_for_status()
             response_text = response.json()["response"]
             
-            processed_response = self._post_process_response(response_text, user_context)
+            # Улучшаем ответ
+            response_text = self._adjust_response_tone(response_text, {"text": prompt})
             
-            self.memory.add_interaction(prompt, processed_response)
-            # Обновляем информацию о пользователе после каждого взаимодействия
-            self.current_user_info = self.memory.get_user_info()
-            return processed_response
+            # Сохраняем диалог
+            self.dialog_manager.add_interaction(prompt, response_text)
+            
+            return response_text
+        except requests.exceptions.Timeout:
+            log.error("Превышено время ожидания ответа от Ollama")
+            return "Извини, я задумалась... Может, попробуем ещё раз? 🤔"
+        except requests.exceptions.RequestException as e:
+            log.error(f"Ошибка при обращении к API: {str(e)}")
+            return "Произошла ошибка при обработке сообщения ���"
         except Exception as e:
-            return f"Произошла ошибка при обработке сообщения 😔"
+            log.error(f"Неожиданная ошибка: {str(e)}")
+            return "Что-то пошло не так... Давай попробуем ещё раз? 🌸"
 
     def chat(self):
-        greeting = "Привет! Я так рада вас видеть!"
+        """Основной метод для общения с пользователем."""
+        # Проверяем доступность сервиса перед началом работы
+        if not self._check_ollama_service():
+            self.console.print("[bold red]Ошибка:[/] Не удалось подключиться к сервису Ollama. Убедитесь, что он запущен.")
+            sys.exit(1)
+
+        # Очищаем старые данные
+        self.dialog_manager.clear_old_messages()
         
-        if self.current_user_info["name"]:
-            greeting = f"С возвращением, {self.current_user_info['name']}! Я скучала по вам! 💖"
-            if self.current_user_info["interests"]:
-                interests = self.current_user_info["interests"][-1]
-                greeting += f" Как ваше увлечение {interests}?"
+        # Получаем имя пользователя
+        name = self.dialog_manager.get_user_name()
+        
+        # Формируем приветствие
+        if name:
+            greeting = f"С возвращением, {name}! 💖 Я так рада тебя видеть! Как твои дела?"
+        else:
+            greeting = "Привет! 💖 Я так рада тебя видеть! Как тебя зовут?"
         
         self.console.print(f"[bold magenta]🎀 Мика:[/] {greeting}")
         
         while True:
             try:
-                user_input = input(f"{Fore.CYAN}Вы: {Fore.RESET}")
+                user_input = input(f"{Fore.CYAN}Вы: {Fore.RESET}").strip()
+                
+                if not user_input:
+                    continue
                 
                 if user_input.lower() in ['выход', 'пока', 'exit', 'quit']:
-                    farewell = "Буду скучать по нашему общению!"
-                    if self.current_user_info["name"]:
-                        farewell = f"Буду скучать по вам, {self.current_user_info['name']}!"
-                    self.console.print(f"[bold magenta]🎀 Мика:[/] {farewell} Возвращайтесь скорее! 🌟")
+                    name = self.dialog_manager.get_user_name()
+                    if name:
+                        farewell = f"Буду скучать по тебе, {name}! 🌟 Возвращайся скорее!"
+                    else:
+                        farewell = "Буду скучать! 🌟 Возвращайся скорее!"
+                    self.console.print(f"[bold magenta]🎀 Мика:[/] {farewell}")
                     break
                 
                 response = self._generate_response(user_input)
-                self.console.print(f"[bold magenta]🎀 Мика:[/] {response}")
+                
+                # Форматируем ответ, если в нем есть markdown
+                if "```" in response or "#" in response:
+                    self.console.print("[bold magenta]🎀 Мика:[/]")
+                    self.console.print(Markdown(response))
+                else:
+                    self.console.print(f"[bold magenta]🎀 Мика:[/] {response}")
                 
             except KeyboardInterrupt:
-                self.console.print("\n[bold magenta]🎀 Мика:[/] Ой, уже уходите? Буду ждать нашей следующей встречи! 🌸")
+                name = self.dialog_manager.get_user_name()
+                if name:
+                    farewell = f"\n[bold magenta]🎀 Мика:[/] Ой, уже уходишь, {name}? 🌸 Буду ждать нашей следующей встречи!"
+                else:
+                    farewell = "\n[bold magenta]🎀 Мика:[/] Ой, уже уходишь? 🌸 Буду ждать нашей следующей встречи!"
+                self.console.print(farewell)
                 break
             except Exception as e:
-                self.console.print(f"[bold red]Ошибка:[/] Что-то пошло не так... 😔")
+                log.exception("Неожиданная ошибка в главном цикле")
+                self.console.print(f"[bold red]Ошибка:[/] Произошла непредвиденная ошибка 😔")
 
 if __name__ == "__main__":
-    mika = Mika()
-    mika.chat() 
+    try:
+        mika = Mika()
+        mika.chat()
+    except Exception as e:
+        log.exception("Критическая ошибка")
+        sys.exit(1) 

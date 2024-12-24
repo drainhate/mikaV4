@@ -13,13 +13,12 @@ class MikaDB:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Таблица для долгосрочной памяти
+            # Таблица для пользователей
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_info (
+                CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY,
                     name TEXT,
-                    last_interaction TIMESTAMP,
-                    data JSON
+                    last_interaction TIMESTAMP
                 )
             """)
             
@@ -30,7 +29,7 @@ class MikaDB:
                     user_id INTEGER,
                     interest TEXT,
                     added_at TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES user_info(id)
+                    FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             """)
             
@@ -41,7 +40,7 @@ class MikaDB:
                     user_id INTEGER,
                     fact TEXT,
                     added_at TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES user_info(id)
+                    FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             """)
             
@@ -53,52 +52,39 @@ class MikaDB:
                     human_message TEXT,
                     ai_message TEXT,
                     timestamp TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES user_info(id)
+                    FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             """)
             
             conn.commit()
 
-    def get_or_create_user(self, name: Optional[str] = None) -> int:
-        """Получает или создает пользователя."""
+    def get_or_create_user(self) -> int:
+        """Получает или создает анонимного пользователя."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            if name:
-                cursor.execute("SELECT id FROM user_info WHERE name = ?", (name,))
-            else:
-                cursor.execute("SELECT id FROM user_info WHERE name IS NULL")
-                
+            cursor.execute("SELECT id FROM users WHERE name IS NULL")
             result = cursor.fetchone()
             
             if result:
                 return result[0]
             
             cursor.execute(
-                "INSERT INTO user_info (name, last_interaction, data) VALUES (?, ?, ?)",
-                (name, datetime.now().isoformat(), '{}')
+                "INSERT INTO users (last_interaction) VALUES (?)",
+                (datetime.now().isoformat(),)
             )
             return cursor.lastrowid
 
-    def update_user_info(self, user_id: int, name: Optional[str] = None, data: Optional[Dict] = None):
-        """Обновляет информацию о пользователе."""
+    def update_user_name(self, user_id: int, name: str):
+        """Обновляет имя пользователя."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            if name:
-                cursor.execute(
-                    "UPDATE user_info SET name = ?, last_interaction = ? WHERE id = ?",
-                    (name, datetime.now().isoformat(), user_id)
-                )
-            
-            if data:
-                cursor.execute(
-                    "UPDATE user_info SET data = ?, last_interaction = ? WHERE id = ?",
-                    (json.dumps(data, ensure_ascii=False), datetime.now().isoformat(), user_id)
-                )
+            cursor.execute(
+                "UPDATE users SET name = ?, last_interaction = ? WHERE id = ?",
+                (name, datetime.now().isoformat(), user_id)
+            )
 
     def add_interest(self, user_id: int, interest: str):
-        """Добавляет интерес пользо��ателя."""
+        """Добавляет интерес пользователя."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -129,9 +115,9 @@ class MikaDB:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Получаем основную информацию
-            cursor.execute("SELECT name, data FROM user_info WHERE id = ?", (user_id,))
-            name, data = cursor.fetchone()
+            # Получаем имя пользователя
+            cursor.execute("SELECT name FROM users WHERE id = ?", (user_id,))
+            name = cursor.fetchone()[0]
             
             # Получаем интересы
             cursor.execute(
@@ -164,8 +150,7 @@ class MikaDB:
                 "name": name,
                 "interests": interests,
                 "facts": facts,
-                "recent_dialogs": dialogs,
-                "additional_data": json.loads(data) if data else {}
+                "recent_dialogs": dialogs[::-1]  # Возвращаем в хронологическом порядке
             }
 
     def cleanup_old_data(self, days: int = 30):
@@ -186,10 +171,4 @@ class MikaDB:
             cursor.execute(
                 "DELETE FROM facts WHERE added_at < ?",
                 (threshold_str,)
-            )
-            
-            # Очищаем старые интересы (опционально)
-            # cursor.execute(
-            #     "DELETE FROM interests WHERE added_at < ?",
-            #     (threshold_str,)
-            # ) 
+            ) 

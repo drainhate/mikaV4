@@ -31,6 +31,10 @@ ENV/
 *.swp
 *.swo
 
+# Logs
+*.log
+logs/
+
 # Misc
 .DS_Store
 .env

@@ -2,75 +2,91 @@ import nltk
 from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk.sentiment import SentimentIntensityAnalyzer
 from textblob import TextBlob
-import spacy
 import wikipedia
-from duckduckgo_search import ddg
-from typing import List, Dict, Optional, Tuple
-
-# Загружаем необходимые компоненты NLTK
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
-try:
-    nltk.data.find('sentiment/vader_lexicon')
-except LookupError:
-    nltk.download('vader_lexicon')
-
-# Загружаем модель SpaCy для русского языка
-try:
-    nlp = spacy.load("ru_core_news_sm")
-except OSError:
-    spacy.cli.download("ru_core_news_sm")
-    nlp = spacy.load("ru_core_news_sm")
+from duckduckgo_search import DDGS
+from typing import Dict, List, Optional, Tuple
 
 class TextAnalyzer:
     def __init__(self):
+        # Загружаем необходимые компоненты NLTK
+        try:
+            nltk.data.find('tokenizers/punkt')
+            nltk.data.find('sentiment/vader_lexicon')
+        except LookupError:
+            nltk.download('punkt')
+            nltk.download('vader_lexicon')
+        
         self.sia = SentimentIntensityAnalyzer()
+        self.ddgs = DDGS()
         wikipedia.set_lang("ru")
 
     def analyze_message(self, text: str) -> Dict:
         """Анализирует сообщение и возвращает различные характеристики."""
-        doc = nlp(text)
-        
         # Базовый анализ
         analysis = {
-            "entities": self._extract_entities(doc),
             "sentiment": self._analyze_sentiment(text),
-            "topics": self._extract_topics(doc),
-            "question": self._is_question(doc),
-            "command": self._is_command(doc)
+            "is_question": self.is_question(text),
+            "is_command": self.is_command(text),
+            "possible_answers": {}
         }
         
         # Если это вопрос, пытаемся найти ответ
-        if analysis["question"]:
+        if analysis["is_question"]:
             analysis["possible_answers"] = self._find_answers(text)
         
         return analysis
 
-    def _extract_entities(self, doc) -> Dict[str, List[str]]:
-        """Извлекает именованные сущности из текста."""
-        entities = {
-            "names": [],
-            "locations": [],
-            "organizations": [],
-            "dates": [],
-            "other": []
+    def extract_user_info(self, text: str) -> Dict[str, Optional[str]]:
+        """Извлекает информацию о пользователе из текста."""
+        info = {
+            "name": None,
+            "interests": [],
+            "facts": []
         }
         
-        for ent in doc.ents:
-            if ent.label_ == "PER":
-                entities["names"].append(ent.text)
-            elif ent.label_ == "LOC":
-                entities["locations"].append(ent.text)
-            elif ent.label_ == "ORG":
-                entities["organizations"].append(ent.text)
-            elif ent.label_ == "DATE":
-                entities["dates"].append(ent.text)
-            else:
-                entities["other"].append((ent.text, ent.label_))
+        # Разбиваем текст на предложения и анализируем тональность
+        sentences = sent_tokenize(text.lower())
+        blob = TextBlob(text)
         
-        return entities
+        # Ищем имя
+        name_markers = ["меня зовут", "моё имя", "мое имя", "я"]
+        for sentence in sentences:
+            for marker in name_markers:
+                if marker in sentence:
+                    words = word_tokenize(sentence)
+                    try:
+                        name_index = words.index(marker.split()[-1]) + 1
+                        if name_index < len(words):
+                            # Берем следующее слово после маркера как имя
+                            info["name"] = words[name_index].title()
+                            break
+                    except ValueError:
+                        continue
+        
+        # Ищем интересы с учетом тональности
+        interest_markers = ["люблю", "нравится", "увлекаюсь", "интересует", "обожаю"]
+        for sentence in blob.sentences:
+            sent_text = str(sentence).lower()
+            for marker in interest_markers:
+                if marker in sent_text and sentence.sentiment.polarity > 0:
+                    words = word_tokenize(sent_text)
+                    try:
+                        marker_index = words.index(marker)
+                        # Добавляем следующее слово как интерес
+                        if marker_index + 1 < len(words):
+                            info["interests"].append(words[marker_index + 1])
+                    except ValueError:
+                        continue
+        
+        # Собираем факты о пользователе
+        fact_markers = ["я", "мой", "моя", "мне", "у меня"]
+        for sentence in sentences:
+            for marker in fact_markers:
+                if marker in sentence:
+                    info["facts"].append(sentence)
+                    break
+        
+        return info
 
     def _analyze_sentiment(self, text: str) -> Dict:
         """Анализирует эмоциональную окраску текста."""
@@ -86,52 +102,11 @@ class TextAnalyzer:
             "neutral": vader_scores["neu"]
         }
 
-    def _extract_topics(self, doc) -> List[str]:
-        """Извлекает основные темы из текста."""
-        topics = []
-        
-        # Извлекаем существительные и именованные сущности
-        for token in doc:
-            if token.pos_ == "NOUN" and len(token.text) > 3:
-                topics.append(token.text.lower())
-        
-        # Добавляем именованные сущности
-        for ent in doc.ents:
-            if ent.label_ in ["LOC", "ORG", "PRODUCT", "EVENT"]:
-                topics.append(ent.text.lower())
-        
-        return list(set(topics))
-
-    def _is_question(self, doc) -> bool:
-        """Определяет, является ли текст вопросом."""
-        # Проверяем наличие вопросительных слов
-        question_words = {"что", "кто", "где", "когда", "почему", "как", "зачем", "какой", "чей"}
-        
-        # Проверяем первое слово
-        if doc[0].text.lower() in question_words:
-            return True
-        
-        # Проверяем знаки препинания
-        if doc[-1].text == "?":
-            return True
-        
-        return False
-
-    def _is_command(self, doc) -> bool:
-        """Определяет, является ли текст командой."""
-        # Проверяем наличие глаголов в повелительном наклонении
-        command_verbs = {"покажи", "расскажи", "найди", "открой", "запусти", "включи", "выключи"}
-        
-        if doc[0].text.lower() in command_verbs:
-            return True
-        
-        return False
-
     def _find_answers(self, question: str) -> Dict[str, str]:
         """Ищет возможные ответы на вопрос."""
         answers = {}
         
-        # Пытаемся най��и ответ в Википедии
+        # Пытае��ся найти ответ в Википедии
         try:
             wiki_results = wikipedia.search(question, results=1)
             if wiki_results:
@@ -142,7 +117,7 @@ class TextAnalyzer:
         
         # Ищем через DuckDuckGo
         try:
-            ddg_results = ddg(question, max_results=3)
+            ddg_results = list(self.ddgs.text(question, max_results=3))
             if ddg_results:
                 answers["web_search"] = [
                     {
@@ -157,37 +132,27 @@ class TextAnalyzer:
         
         return answers
 
-    def extract_user_info(self, text: str) -> Dict[str, Optional[str]]:
-        """Извлекает информацию о пользователе из текста."""
-        doc = nlp(text)
-        info = {
-            "name": None,
-            "interests": [],
-            "facts": []
+    def is_question(self, text: str) -> bool:
+        """Определяет, является ли текст вопросом."""
+        text = text.lower().strip()
+        
+        # Проверяем знак вопроса
+        if text.endswith("?"):
+            return True
+        
+        # Проверяем вопросительные слова
+        question_words = {"что", "кто", "где", "когда", "почему", "как", "зачем", "какой", "чей", "сколько"}
+        words = word_tokenize(text)
+        
+        return any(word in question_words for word in words)
+
+    def is_command(self, text: str) -> bool:
+        """Определяет, является ли текст командой."""
+        text = text.lower().strip()
+        command_verbs = {
+            "покажи", "расскажи", "найди", "открой", "запусти", 
+            "включи", "выключи", "помоги", "объясни", "сделай"
         }
         
-        # Ищем имя
-        if "меня зовут" in text.lower():
-            for token in doc:
-                if token.pos_ == "PROPN":
-                    info["name"] = token.text
-                    break
-        
-        # Ищем интересы
-        interest_markers = ["люблю", "нравится", "увлекаюсь", "интересует"]
-        for sent in doc.sents:
-            sent_text = sent.text.lower()
-            for marker in interest_markers:
-                if marker in sent_text:
-                    for token in sent:
-                        if token.pos_ == "NOUN":
-                            info["interests"].append(token.text.lower())
-        
-        # Ищем факты
-        fact_markers = ["я", "мой", "моя", "мне"]
-        for sent in doc.sents:
-            for token in sent:
-                if token.text.lower() in fact_markers:
-                    info["facts"].append(sent.text)
-        
-        return info 
+        words = word_tokenize(text)
+        return any(word in command_verbs for word in words) 
